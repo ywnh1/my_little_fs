@@ -70,9 +70,6 @@ impl FsFile {
 
     /// 定位包含绝对偏移 `pos` 的块：返回 `(块下标, 块内偏移)`。
     /// `pos` 落在文件末尾之后（含末尾）时返回 `None`。
-    ///
-    /// ponytail: 线性扫描。块按 `offset` 升序排列，块数很多时可换成按 `offset`
-    /// 的二分查找；当前实现假定单个文件的块数不至于成为瓶颈。
     #[inline]
     pub fn find(&self, pos: u64) -> Option<(usize, usize)> {
         self.chunks.iter().enumerate().find_map(|(idx, chunk)| {

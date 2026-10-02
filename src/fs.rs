@@ -223,10 +223,6 @@ impl Fs {
                     fs::create_dir_all(parent)?;
                 }
                 File::create(&dest)?.write_all(&data)?;
-                // ponytail: 此处未调用 fsync。块数据可能仍留在页缓存中，
-                // 而调用方随后就会提交数据库引用（见 `db::FsDbWrite::insert`），
-                // 断电时可能留下指向空文件的记录。逐块 fsync 在手机上代价过高，
-                // 现约定由调用方在批量导入结束后自行同步整个目录。
             }
             // 5. 记录元数据；`size` 记的是**原始**长度
             chunks.push(Chunk {
