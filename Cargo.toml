@@ -1,0 +1,15 @@
+[package]
+name = "my_little_fs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = { version = "1.8", features = ["serde"] }
+fastcdc = "5.0"
+postcard = { version = "1.1", features = ["use-std"] }
+redb = "4.3"
+serde = { version = "1.0", features = ["derive"] }
+tempfile = "3.27"
+thiserror = "2.0"
+toml = "1.1"
+zstd = { version = "0.14", default-features = false }
