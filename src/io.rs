@@ -45,13 +45,6 @@ pub enum FsIoError {
     IoError(#[from] io::Error),
     #[error("fs db error: {0}")]
     DbError(#[from] crate::db::FsDbError),
-    /// 分块失败。注意 [`crate::fs::Fs::file_processing`] 内部用 `?` 直接把
-    /// `fastcdc` 的错误转成了 `io::Error`（`io::Error` 有通用的 `From<impl Error>`），
-    /// 所以这个变体目前不会被构造，保留是为了不破坏已有的公开 API。
-    #[error("fastcdc error: {0}")]
-    FastCdcError(#[from] fastcdc::v2020::Error),
-    #[error("too many or less files getted by index: {0}")]
-    IndexError(String),
 }
 
 impl FsInput for Fs {
