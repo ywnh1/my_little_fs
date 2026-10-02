@@ -5,6 +5,10 @@ edition = "2024"
 description = "内容寻址文件系统：CDC 分块 + blake3 寻址 + zstd 压缩 + redb 元数据"
 repository = "https://github.com/ywnh1/my_little_fs"
 license = "MIT"
+keywords = ["filesystem", "content-addressed", "deduplication", "backup", "blake3"]
+categories = ["filesystem", "data-structures"]
+# AGENTS.md 是给协作代理看的内部说明，不进发布包
+exclude = ["AGENTS.md"]
 
 [dependencies]
 blake3 = { version = "1.8", features = ["serde"] }
@@ -12,7 +16,8 @@ fastcdc = "5.0"
 postcard = { version = "1.1", features = ["use-std"] }
 redb = "4.3"
 serde = { version = "1.0", features = ["derive"] }
-tempfile = "3.27"
 thiserror = "2.0"
-toml = "1.1"
 zstd = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27"
