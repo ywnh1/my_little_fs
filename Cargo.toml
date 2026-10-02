@@ -2,6 +2,9 @@
 name = "my_little_fs"
 version = "0.1.0"
 edition = "2024"
+description = "内容寻址文件系统：CDC 分块 + blake3 寻址 + zstd 压缩 + redb 元数据"
+repository = "https://github.com/ywnh1/my_little_fs"
+license = "MIT"
 
 [dependencies]
 blake3 = { version = "1.8", features = ["serde"] }

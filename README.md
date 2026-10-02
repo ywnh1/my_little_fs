@@ -183,4 +183,4 @@ Rust edition 2024。
 
 ## 许可
 
-尚未添加 LICENSE 文件。
+MIT 许可，详见 [LICENSE](LICENSE)。
