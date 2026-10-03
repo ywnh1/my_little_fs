@@ -452,3 +452,44 @@ fn empty_fs_lists_nothing_and_gc_is_a_no_op() {
     let text = env.ok(&["gc", "--dry-run"]);
     assert!(text.contains("可回收 0 个块"), "text: {text}");
 }
+
+#[test]
+fn single_version_commands_reject_all_instead_of_picking_one() {
+    let env = Env::new();
+    let src = env.write("multi.txt", b"content\n");
+    env.ok(&["import", src.to_str().unwrap()]);
+
+    // 默默挑一个会让使用者拿到自己没要的版本却浑然不觉，所以要报错
+    let stderr = env.fail(&["cat", src.to_str().unwrap(), "--all"]);
+    assert!(stderr.contains("--all"), "stderr: {stderr}");
+    let stderr = env.fail(&[
+        "export",
+        src.to_str().unwrap(),
+        env.path("o.txt").to_str().unwrap(),
+        "--all",
+    ]);
+    assert!(stderr.contains("--all"), "stderr: {stderr}");
+    assert!(!env.path("o.txt").exists(), "报错时不该写出任何文件");
+}
+
+#[test]
+fn empty_paths_in_the_config_mean_unset_not_empty() {
+    let env = Env::new();
+    std::fs::create_dir_all(env.path("xdg-config/mlfs")).unwrap();
+    std::fs::write(
+        env.path("xdg-config/mlfs/config.toml"),
+        format!(
+            "root = \"{}\"\n\n[storage]\ndb_path = \"\"\ndata_path = \"\"\ntemp_dir = \"\"\n",
+            env.root().display()
+        ),
+    )
+    .unwrap();
+
+    let src = env.write("f.txt", b"payload\n");
+    env.ok(&["import", src.to_str().unwrap()]);
+
+    // 空字符串应当被当作「没写」，于是回落到 root 下面那套默认位置
+    assert!(env.root().join("db.redb").is_file(), "数据库应在 root 下");
+    assert!(env.root().join("data").is_dir(), "数据目录应在 root 下");
+    assert_eq!(env.ok(&["cat", src.to_str().unwrap()]), "payload\n");
+}

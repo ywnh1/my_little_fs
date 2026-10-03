@@ -190,14 +190,16 @@ impl Config {
             builder = builder.with_max_size(Some(v));
         }
 
-        if let Some(p) = &self.storage.db_path {
-            builder = builder.with_db_path(Some(p.clone()));
+        // 三个可选路径：写成空字符串等同于「没写」。否则 db_path = "" 会被
+        // 当成一个真实的空路径，把数据库建到莫名其妙的地方去。
+        if let Some(p) = non_empty_path(&self.storage.db_path) {
+            builder = builder.with_db_path(Some(p));
         }
-        if let Some(p) = &self.storage.data_path {
-            builder = builder.with_data_path(Some(p.clone()));
+        if let Some(p) = non_empty_path(&self.storage.data_path) {
+            builder = builder.with_data_path(Some(p));
         }
-        if let Some(p) = &self.storage.temp_dir {
-            builder = builder.with_temp_dir(Some(p.clone()));
+        if let Some(p) = non_empty_path(&self.storage.temp_dir) {
+            builder = builder.with_temp_dir(Some(p));
         }
 
         builder
@@ -210,6 +212,11 @@ impl Config {
     pub fn overwrite_mode(&self, from_cli: Option<OverwriteMode>) -> OverwriteMode {
         from_cli.unwrap_or(self.behavior.overwrite)
     }
+}
+
+/// 取一个「确实给了」的路径：没写、或者只写了个空字符串，都算没给。
+fn non_empty_path(path: &Option<PathBuf>) -> Option<PathBuf> {
+    path.as_ref().filter(|p| !p.as_os_str().is_empty()).cloned()
 }
 
 /// 内置默认根目录：优先 XDG 数据目录，实在没有就退到当前目录下的 `.mlfs`。

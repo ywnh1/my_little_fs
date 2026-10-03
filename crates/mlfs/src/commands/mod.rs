@@ -57,7 +57,14 @@ pub(crate) fn ensure_id_exists(fs: &Fs, id: &str) -> Result<()> {
 }
 
 /// 取出所选版本的内容。
+///
+/// `export` / `cat` 一次只能导出一个版本，所以 `--all` 在这里是误用，
+/// 直接报错而不是默默挑一个 —— 默默挑一个的话，使用者会拿到自己没要的那个版本
+/// 却浑然不觉。
 pub(crate) fn take_version(fs: &Fs, id: &str, version: &VersionArgs) -> Result<FsFile> {
+    if version.is_all() {
+        bail!("--all 在这里没有意义：一次只能处理一个版本。要删掉全部版本请用 rm");
+    }
     ensure_id_exists(fs, id)?;
     let mut files = fs.get(id, version.to_index())?;
     if files.is_empty() {

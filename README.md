@@ -217,7 +217,7 @@ let fs = Fs::builder("/a/fs".into())
 | [`file`](src/file.rs) | 逻辑文件 `FsFile`，实现 `Read` + `Seek` |
 | [`io`](src/io.rs) | 与外界真实文件的双向复制 |
 
-命令行界面在 [`crates/mlfs`](crates/mlfs/src) 里，是独立的 crate —— 库那边不依赖 clap / figment 那一套。
+命令行界面在 [`crates/mlfs`](crates/mlfs) 里，是独立的 crate —— 库那边不依赖 clap / figment 那一套。它的用法与配置见 [CLI 的 README](crates/mlfs/README.md)。
 
 ## API 一览
 

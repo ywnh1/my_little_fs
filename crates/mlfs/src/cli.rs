@@ -246,6 +246,15 @@ pub struct VersionArgs {
 }
 
 impl VersionArgs {
+    /// 是否选了「全部版本」。
+    ///
+    /// `export` / `cat` 一次只能处理一个版本，靠这个把 `--all` 挡回去；
+    /// `rm-history` 那边它是有意义的（删光所有版本）。
+    #[must_use]
+    pub fn is_all(&self) -> bool {
+        self.all
+    }
+
     /// 翻成库里的 [`Index`]。什么都没给就是最新版本。
     #[must_use]
     pub fn to_index(&self) -> Index {
