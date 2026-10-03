@@ -229,6 +229,12 @@ pub trait FsDbReadOnly {
     /// 返回的 [`FsFile`] 已经带上数据根目录，可以直接读出内容。
     /// id 不存在时返回 [`FsDbError::RedbTableError`]（表未创建），而不是空列表。
     fn get<T: AsRef<str>>(&self, id: T, index: Index) -> Result<Vec<FsFile>, FsDbError>;
+
+    /// 按时间顺序列出某个 id 的全部版本，连同版本号（毫秒时间戳）。
+    ///
+    /// 和 [`get`](FsDbReadOnly::get) 的区别只有一点：这里把版本号也交出来，
+    /// 供调用方展示「哪个版本是什么时候存的」。
+    fn history<T: AsRef<str>>(&self, id: T) -> Result<Vec<(u64, FsFile)>, FsDbError>;
 }
 
 impl FsDbReadOnly for Fs {
@@ -252,6 +258,20 @@ impl FsDbReadOnly for Fs {
         // 数据库里只有块的元数据；要把内容读出来还得知道数据根目录在哪
         for file in &mut res {
             file.data_path = Arc::new(self.data_path.clone());
+        }
+        Ok(res)
+    }
+
+    fn history<T: AsRef<str>>(&self, id: T) -> Result<Vec<(u64, FsFile)>, FsDbError> {
+        let reader = self.db.begin_read()?;
+        let name = file_table_name(id.as_ref());
+        let table = reader.open_multimap_table(file_table_def(&name))?;
+        let mut res = Vec::new();
+        for entry in table.iter()? {
+            let (version, value) = entry?;
+            let mut file = decode_chunks(value)?;
+            file.data_path = Arc::new(self.data_path.clone());
+            res.push((version.value(), file));
         }
         Ok(res)
     }
@@ -490,6 +510,10 @@ pub trait FsGc {
     /// 注意：引用计数只在 `insert` / `remove*` 时维护。若一次导入在写入块数据之后、
     /// 提交数据库之前失败，那些块从未被计数，**不会**被这里回收。
     fn release(&self) -> Result<usize, FsDbError>;
+
+    /// 数一下引用计数已经归零、下次 [`release`](FsGc::release) 会清掉的块：
+    /// 返回 `(块数, 总字节数)`。**不会改动任何东西**，供 `--dry-run` 一类场景使用。
+    fn garbage(&self) -> Result<(usize, u64), FsDbError>;
 }
 
 /// 数据库层的错误。
@@ -512,6 +536,29 @@ pub enum FsDbError {
 }
 
 impl FsGc for Fs {
+    fn garbage(&self) -> Result<(usize, u64), FsDbError> {
+        let reader = self.db.begin_read()?;
+        // 从没写过东西时 gc 表还不存在，那本来就没有垃圾
+        let Ok(table) = reader.open_table(GC_TABLE) else {
+            return Ok((0, 0));
+        };
+        let mut blocks = 0;
+        let mut bytes = 0u64;
+        for entry in table.iter()? {
+            let (key, count) = entry?;
+            if count.value() != 0 {
+                continue;
+            }
+            blocks += 1;
+            let path = self
+                .data_path
+                .join(hash2path(&Hash::from_slice(key.value())?));
+            // 文件可能压根没写成功，那时按 0 字节算
+            bytes += path.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+        Ok((blocks, bytes))
+    }
+
     fn release(&self) -> Result<usize, FsDbError> {
         let writer = self.db.begin_write()?;
         let mut removed = 0;
@@ -875,6 +922,49 @@ mod tests {
         let (_dir, fs) = fixture();
         assert!(!fs.data_path.exists());
         assert_eq!(fs.release().unwrap(), 0);
+    }
+
+    #[test]
+    fn history_returns_every_version_with_its_stamp_in_order() {
+        let (_dir, fs) = fixture();
+        let v1 = file_of(&[b"one"]);
+        let v2 = file_of(&[b"two"]);
+        let v3 = file_of(&[b"three"]);
+        fs.insert("doc", v1.clone()).unwrap();
+        fs.insert("doc", v2.clone()).unwrap();
+        fs.insert("doc", v3.clone()).unwrap();
+
+        let versions = fs.history("doc").unwrap();
+        assert_eq!(versions.len(), 3);
+        // 版本号必须递增，调用方才能拿它当「时间顺序」用
+        assert!(versions[0].0 < versions[1].0 && versions[1].0 < versions[2].0);
+        assert_eq!(versions[0].1.chunks, v1.chunks);
+        assert_eq!(versions[1].1.chunks, v2.chunks);
+        assert_eq!(versions[2].1.chunks, v3.chunks);
+    }
+
+    #[test]
+    fn history_of_an_unknown_id_is_an_error() {
+        let (_dir, fs) = fixture();
+        assert!(fs.history("nobody").is_err());
+    }
+
+    #[test]
+    fn garbage_counts_unreferenced_blocks_without_deleting_them() {
+        let (_dir, fs) = fixture();
+        // 从没写过东西时 gc 表还不存在，本来就没有垃圾
+        assert_eq!(fs.garbage().unwrap(), (0, 0));
+
+        let payload = place(&fs, b"payload to be orphaned");
+        let blob = fs.data_path.join(payload.path());
+        fs.insert("doc", FsFile::from(vec![payload])).unwrap();
+        assert_eq!(fs.garbage().unwrap(), (0, 0), "还有引用时不该算作垃圾");
+
+        fs.remove("doc").unwrap();
+        let (blocks, bytes) = fs.garbage().unwrap();
+        assert_eq!(blocks, 1);
+        assert_eq!(bytes, blob.metadata().unwrap().len());
+        assert!(blob.is_file(), "garbage 只负责数，不能真的动手删");
     }
 
     #[test]

@@ -64,6 +64,74 @@ let fs = Fs::builder("/tmp/my-fs".into())
 
 三个 `*_size` 只填一部分也可以，没填的会按 1:4:16 推导；一个都不填用 fastcdc 推荐的 16 KiB / 32 KiB / 64 KiB。注意这几个 setter 接收的是 `Option`，所以要写 `Some(..)`。
 
+## 命令行界面
+
+仓库里除了库，还有一个 CLI（`crates/mlfs`），覆盖日常的导入导出与版本管理：
+
+```sh
+cargo install --path crates/mlfs      # 或 cargo build -p mlfs
+
+mlfs import ./photo.jpg                 # id 默认取文件的绝对路径
+mlfs import -R ./photos                 # 递归导入，遵守 .gitignore
+mlfs ls                                 # 列出所有 id
+mlfs history /home/u/photo.jpg          # 看它的全部版本
+mlfs cat /home/u/photo.jpg > copy.jpg   # 导出到标准输出
+mlfs export /home/u/photo.jpg ./out.jpg # 导出到文件
+mlfs mv /home/u/photo.jpg /archive/pic  # 改名，历史一并带走
+mlfs rm -y /home/u/photo.jpg            # 删除 id 及其全部历史
+mlfs gc --dry-run                       # 看看能回收多少，再决定
+```
+
+### id 规则
+
+id 默认是文件的**绝对路径**，单文件与递归共用这一条规则 —— 导入一个目录之后，
+里面的文件各自记在自己原来的位置上，换个目录再导入也不会变成第二份。
+`--id <name>` 可以显式指定（只能配单个输入）。
+
+### 配置
+
+所有选项都能写进配置文件，命令行只是临时覆盖：
+
+**命令行 > 环境变量（`MLFS_` 前缀）> 配置文件 > 内置默认**
+
+配置文件默认在 `$XDG_CONFIG_HOME/mlfs/config.toml`（通常 `~/.config/mlfs/config.toml`），
+也可以用 `--config` 指到别处。
+
+```toml
+root = "/home/u/.local/share/mlfs"   # fs 根目录
+codec = "zstd"                       # zstd | gzip | brotli | lz4 | snappy | none
+level = 3
+
+[cdc]                                # 留空的部分交给库按 1:4:16 推导
+min_size = 16384
+avg_size = 32768
+max_size = 65536
+
+[walk]                               # 递归导入时的遍历规则
+ignore = true                        # 遵守 .gitignore / .ignore
+hidden = false
+follow_links = false
+max_depth = 0                        # 0 表示不限
+
+[output]
+json = false
+progress = true
+
+[behavior]
+overwrite = "archive"                # archive | refuse | force
+confirm_remove = true                # 删除前确认，--yes 跳过
+```
+
+环境变量用 `MLFS_` 前缀、嵌套层级以 `__` 分隔，例如 `MLFS_ROOT=/data/fs`、
+`MLFS_CDC__AVG_SIZE=65536`。
+
+### 覆盖已有文件时
+
+`export` 的目标如果已经存在，默认（`overwrite = "archive"`）会**先把那个文件存进 fs**，
+再用 fs 里的内容覆盖它 —— 于是「导出」这个动作不会让任何数据消失。存档用的 id 就是
+目标的绝对路径，随时可以 `mlfs cat` 取回来。也可以改成 `refuse`（直接拒绝）
+或 `force`（直接覆盖，不留档）。
+
 ## 压缩后端与 Feature 开关
 
 压缩后端是**可选、可共存**的。默认只开 `zstd`，其余按需启用：
@@ -149,6 +217,8 @@ let fs = Fs::builder("/a/fs".into())
 | [`file`](src/file.rs) | 逻辑文件 `FsFile`，实现 `Read` + `Seek` |
 | [`io`](src/io.rs) | 与外界真实文件的双向复制 |
 
+命令行界面在 [`crates/mlfs`](crates/mlfs/src) 里，是独立的 crate —— 库那边不依赖 clap / figment 那一套。
+
 ## API 一览
 
 导入导出：
@@ -216,14 +286,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 测试
 
 ```sh
-cargo test                        # 默认组合
-cargo test --all-features         # 三个压缩后端全开
-cargo test --no-default-features  # 什么都不开
+cargo test --workspace             # 全部 107 个
+cargo test -p my_little_fs         # 只测库
+cargo test -p mlfs                 # 只测命令行
+cargo test -p my_little_fs --all-features
+cargo test -p my_little_fs --no-default-features
 ```
 
-默认组合下 67 个测试，全开时 71 个：49 个单元测试（分块参数推导、编码标签分派与各后端往返、`FsFile` 的定位/寻址/跨块读取、数据库的各种 `Index` 语义与引用计数），17 个端到端测试（走完整的导入导出路径，覆盖多块大文件、去重、历史回滚、五个后端写进同一目录再全部读回、跨进程重开根目录），外加 1 个文档测试。
+**库**：58 个单元测试（分块参数推导、编码标签分派与各后端往返、`FsFile` 的定位/寻址/跨块读取、数据库的各种 `Index` 语义、版本号与引用计数），17 个端到端测试（多块大文件、去重、历史回滚、五个后端写进同一目录再全部读回、跨进程重开根目录），外加 1 个文档测试。各种 feature 组合都实测过。
 
-上面三种命令以及「单独开某一个后端」等组合都实测过。
+**命令行**：11 个单元测试，20 个端到端测试 —— 真的把二进制跑起来，用临时 XDG 目录彼此隔离，覆盖配置优先级、递归与 ignore 规则、覆盖已有文件时的存档行为、以及各命令的 JSON 输出。
 
 ## 设计上的取舍
 
@@ -240,7 +312,7 @@ cargo test --no-default-features  # 什么都不开
 
 ## 环境
 
-Rust edition 2024。
+Rust edition 2024。仓库是个 Cargo workspace：根目录是库，`crates/mlfs` 是命令行。
 
 ## 许可
 

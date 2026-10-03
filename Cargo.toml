@@ -57,3 +57,9 @@ tempfile = { version = "3.27", optional = true }
 [dev-dependencies]
 # 测试无论是否启用 `tempfile` feature 都要临时目录，所以这里恒定依赖一份
 tempfile = "3.27"
+
+[workspace]
+# 库本身留在根目录，命令行界面单独一个 crate：
+# 这样库的使用者不会被被动拉进 clap / figment 那一整套。
+members = ["crates/mlfs"]
+resolver = "3"

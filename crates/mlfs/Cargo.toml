@@ -1,0 +1,30 @@
+[package]
+name = "mlfs"
+version = "0.1.0"
+edition = "2024"
+description = "my_little_fs 的命令行界面：导入、导出、浏览历史与回收"
+repository = "https://github.com/ywnh1/my_little_fs"
+license = "MIT"
+keywords = ["filesystem", "content-addressed", "deduplication", "backup", "cli"]
+categories = ["command-line-utilities", "filesystem"]
+exclude = ["AGENTS.md"]
+
+[dependencies]
+# 命令行界面默认把所有压缩后端都编进来 —— 工具应当开箱即用，
+# 而不是装完发现 `--codec brotli` 报「本构建未启用」
+my_little_fs = { path = "../..", features = [
+    "gzip",
+    "brotli",
+    "lz4",
+    "snappy",
+] }
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+ignore = "0.4"
+indicatif = "0.18"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.27"

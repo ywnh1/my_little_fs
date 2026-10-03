@@ -148,6 +148,9 @@ impl FsBuilder {
 
     /// 消耗工厂，打开（不存在则创建）数据库并产出 [`Fs`]。
     ///
+    /// 数据库所在的**目录**会按需创建（包括 `root` 本身），所以指向一个全新的
+    /// 路径也能直接开工。
+    ///
     /// 注意：这里**不会**创建数据目录与临时目录，它们都由第一次写入时按需创建。
     /// 因此 `build()` 成功只代表数据库可用。
     ///
@@ -169,6 +172,10 @@ impl FsBuilder {
         } else {
             self.root_path.join(".tmp")
         };
+        // 全新的根目录可能还不存在：先把数据库的父目录建出来
+        if let Some(parent) = db_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
         let db = Database::create(db_path)?;
         let cdc_opt = CdcOptions::from(&self);
         Ok(Fs {
@@ -464,6 +471,19 @@ mod tests {
         };
         let builder = FsBuilder::new(PathBuf::from("/tmp")).with_cdc_config(wanted);
         assert_eq!(CdcOptions::from(&builder), wanted);
+    }
+
+    #[test]
+    fn build_creates_a_completely_fresh_root() {
+        // 回归点：数据库文件的父目录不存在时 build 会直接失败，
+        // 于是 CLI 指向一个还没建过的根目录就报「No such file or directory」
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("deeply/nested/root");
+        assert!(!root.exists());
+
+        let fs = Fs::builder(root.clone()).build().unwrap();
+        assert!(root.join("db.redb").is_file());
+        drop(fs);
     }
 
     #[test]

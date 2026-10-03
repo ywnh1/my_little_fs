@@ -60,6 +60,14 @@ impl From<Vec<Chunk>> for FsFile {
 }
 
 impl FsFile {
+    /// 组成该文件的块数。
+    ///
+    /// 供调用方展示用 —— 它不触发任何读取，只是数一下元数据。
+    #[must_use]
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
     /// 文件总大小 = 所有块的原始大小之和。首次调用后缓存结果。
     #[inline]
     pub fn get_size(&mut self) -> u64 {
@@ -296,6 +304,15 @@ mod tests {
         file.read_to_end(&mut got).unwrap();
         assert!(got.is_empty());
         assert_eq!(file.next_byte().unwrap(), None);
+    }
+
+    #[test]
+    fn chunk_count_reports_the_number_of_blocks() {
+        let (_dir, file, _) = fixture(&[b"aa", b"bbb", b"c"]);
+        assert_eq!(file.chunk_count(), 3);
+        // 空文件（哨兵块之外）也应当如实报 0
+        let (_dir2, empty, _) = fixture(&[]);
+        assert_eq!(empty.chunk_count(), 0);
     }
 
     #[test]
