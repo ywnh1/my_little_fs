@@ -37,6 +37,9 @@ impl Chunk {
     ///
     /// 用它嗅探磁盘上的数据有没有被压缩过，从而让「压缩」与「未压缩」两种块
     /// 能共存在同一个数据目录里（`Fs` 的压缩设置可以中途改变）。
+    ///
+    /// 这是个纯数值，不依赖任何后端 crate，所以在没编译进解压后端时
+    /// 也能用它识别出「这块我解不开」。
     const ZSTD_MAGIC: u32 = 0xFD2FB528;
 
     /// 从字节反序列化出元数据（postcard 格式），供数据库读取使用。
@@ -59,11 +62,28 @@ impl Chunk {
     pub(crate) fn read(&self, data_root: &Path) -> io::Result<Vec<u8>> {
         let raw = std::fs::read(data_root.join(self.path()))?;
         // 不足 4 字节不可能带魔数，原样返回
-        if raw.len() >= 4 && u32::from_le_bytes(raw[..4].try_into().unwrap()) == Self::ZSTD_MAGIC {
-            zstd::decode_all(raw.as_slice())
-        } else {
-            Ok(raw)
+        if raw.len() < 4 || u32::from_le_bytes(raw[..4].try_into().unwrap()) != Self::ZSTD_MAGIC {
+            return Ok(raw);
         }
+        Self::decompress(raw)
+    }
+
+    /// 解压一个已经确认带 zstd 魔数的块。
+    #[cfg(feature = "zstd")]
+    fn decompress(raw: Vec<u8>) -> io::Result<Vec<u8>> {
+        zstd::decode_all(raw.as_slice())
+    }
+
+    /// 没有编译进任何解压后端。
+    ///
+    /// 这里必须报错而不是返回原始字节 —— 后者会把压缩数据当成文件内容，
+    /// 使用者在拿到一堆乱码之前不会意识到是自己没开 feature。
+    #[cfg(not(feature = "zstd"))]
+    fn decompress(_raw: Vec<u8>) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "这个块以 zstd 压缩存储，但本构建未启用 `zstd` feature，无法解压",
+        ))
     }
 
     /// 该块在数据目录中的**相对**路径，需由调用方拼接数据根目录后再使用。
@@ -100,6 +120,7 @@ mod tests {
         assert_eq!(chunk.read(dir.path()).unwrap(), data);
     }
 
+    #[cfg(feature = "zstd")]
     #[test]
     fn compressed_data_is_transparently_decompressed() {
         let dir = tempfile::tempdir().unwrap();
@@ -131,6 +152,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let chunk = place(dir.path(), b"");
         assert_eq!(chunk.read(dir.path()).unwrap(), b"");
+    }
+
+    /// 没有编译进解压后端时，遇到压缩块必须明确报错。
+    ///
+    /// 这里手工摆放一段真的 zstd 流，而不是依赖 `zstd` crate 去造 ——
+    /// 正是为了在 `zstd` feature 关闭时也能跑。
+    #[cfg(not(feature = "zstd"))]
+    #[test]
+    fn compressed_chunk_without_backend_is_an_explicit_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // zstd 空帧：魔数 + 帧头，足以触发魔数嗅探
+        let mut framed = Chunk::ZSTD_MAGIC.to_le_bytes().to_vec();
+        framed.extend_from_slice(&[0x20, 0x00, 0x01, 0x00, 0x00]);
+
+        let data = b"whatever".to_vec();
+        let hash = blake3::hash(&data);
+        let chunk = Chunk {
+            hash,
+            size: data.len(),
+            offset: 0,
+        };
+        let path = dir.path().join(chunk.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, &framed).unwrap();
+
+        let err = chunk.read(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]

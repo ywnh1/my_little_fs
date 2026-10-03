@@ -54,6 +54,7 @@ fn blob_count(root: &Path) -> usize {
 }
 
 /// 数据目录里所有块文件的总字节数。
+#[cfg(feature = "zstd")]
 fn blob_bytes(root: &Path) -> u64 {
     fn walk(dir: &Path, n: &mut u64) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -291,6 +292,8 @@ fn remove_history_keeps_the_other_versions_readable() {
     assert_eq!(read_back(&fs, dir.path(), "doc", "out.bin"), keep);
 }
 
+/// 需要 `zstd` feature：没有后端时 `with_compress` 根本不存在。
+#[cfg(feature = "zstd")]
 #[test]
 fn compression_shrinks_compressible_data_and_never_inflates_incompressible_data() {
     let dir = tempfile::tempdir().unwrap();
@@ -335,6 +338,7 @@ fn compression_shrinks_compressible_data_and_never_inflates_incompressible_data(
     );
 }
 
+#[cfg(feature = "zstd")]
 #[test]
 fn compressed_and_uncompressed_blobs_coexist_in_one_data_directory() {
     // 压缩设置中途改变时，老块（未压缩）与新块（压缩）必须都能读

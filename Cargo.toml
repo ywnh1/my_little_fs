@@ -10,6 +10,20 @@ categories = ["filesystem", "data-structures"]
 # AGENTS.md 是给协作代理看的内部说明，不进发布包
 exclude = ["AGENTS.md"]
 
+[features]
+default = ["zstd", "tempfile"]
+
+# 压缩后端：zstd。
+# 关掉后写入端一律存原始字节，build 出来的 `Fs` 也不再提供 `with_compress`
+# （编译期就报错，而不是运行时静默忽略）。若数据目录里已有压缩块，
+# 读取时会返回 `ErrorKind::Unsupported` 而不是把压缩数据当原始数据返回。
+zstd = ["dep:zstd"]
+
+# 原子落盘：块和导出文件都先写同目录下的临时文件，再 rename 到目标位置，
+# 避免掉电/崩溃留下写了一半的文件。关掉后直接写目标文件，
+# 依赖也随之不编译（`temp_dir` 配置项同时消失）。
+tempfile = ["dep:tempfile"]
+
 [dependencies]
 blake3 = { version = "1.8", features = ["serde"] }
 fastcdc = "5.0"
@@ -17,7 +31,9 @@ postcard = { version = "1.1", features = ["use-std"] }
 redb = "4.3"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
-zstd = { version = "0.14", default-features = false }
+zstd = { version = "0.14", default-features = false, optional = true }
+tempfile = { version = "3.27", optional = true }
 
 [dev-dependencies]
+# 测试无论是否启用 `tempfile` feature 都要临时目录，所以这里恒定依赖一份
 tempfile = "3.27"

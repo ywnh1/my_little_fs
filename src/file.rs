@@ -25,13 +25,7 @@ use std::{
 /// `data_path` 由 [`crate::db::FsDbReadOnly::get`] 取出文件时注入。
 /// 手工用 [`Default`] 或 [`From<Vec<Chunk>>`](From) 构造的 `FsFile` 其
 /// `data_path` 为空路径，会相对**进程当前工作目录**去找块文件 —— 仅适合测试。
-///
-/// # 相等性
-///
-/// `PartialEq` 由派生实现，因此 `cache` 也参与比较：两个内容相同、
-/// 只是缓存命中情况不同的 `FsFile` 会被判为不相等。判断内容是否相同请比较
-/// [`get_size`](FsFile::get_size) 与读出的字节。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FsFile {
     /// 组成该文件的所有块，按 `offset` 升序
     pub(crate) chunks: Arc<Vec<Chunk>>,
@@ -43,6 +37,16 @@ pub struct FsFile {
     pub(crate) pos: u64,
     /// 当前缓存的块：`(块下标, 已解压内容)`
     pub(crate) cache: Option<(usize, Arc<Vec<u8>>)>,
+}
+
+impl PartialEq for FsFile {
+    fn eq(&self, other: &Self) -> bool {
+        // 只看 `chunks` 和 `data_path` 是否相等，其他不考虑
+        //
+        // 只要 `chunks` 和 `data_path` 相等，就说明两个 `FsFile`
+        // 实际上相等，其他都是读时的状态，不代表文件本身
+        self.chunks == other.chunks && self.data_path == other.data_path
+    }
 }
 
 impl From<Vec<Chunk>> for FsFile {

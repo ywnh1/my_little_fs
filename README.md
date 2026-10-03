@@ -64,11 +64,46 @@ let fs = Fs::builder("/tmp/my-fs".into())
 
 三个 `*_size` 只填一部分也可以，没填的会按 1:4:16 推导；一个都不填用 fastcdc 推荐的 16 KiB / 32 KiB / 64 KiB。注意这几个 setter 接收的是 `Option`，所以要写 `Some(..)`。
 
+## Feature 开关
+
+两个可选 feature，默认都开着，不需要就可以关掉：
+
+| feature | 默认 | 关掉之后 |
+| --- | --- | --- |
+| `zstd` | 开 | 不再编译 zstd，`with_compress` 连同方法一起消失（误用会在**编译期**报错），写入端一律存原始字节；数据目录里若已有压缩块，读取会返回 `Unsupported` 错误 |
+| `tempfile` | 开 | 不再编译 tempfile，`with_temp_dir` 消失；块和导出文件都直接写目标，中途崩溃可能留下写了一半的文件 |
+
+```toml
+# 两个都关：只剩核心依赖
+my_little_fs = { git = "https://github.com/ywnh1/my_little_fs", default-features = false }
+
+# 只要原子写入，不要压缩后端
+my_little_fs = { git = "...", default-features = false, features = ["tempfile"] }
+
+# 只要压缩，不要原子写入
+my_little_fs = { git = "...", default-features = false, features = ["zstd"] }
+```
+
+关掉 `zstd` 不影响读回未压缩的数据，只是解不开压缩块 —— 而且会明确报 `Unsupported`，不会把压缩数据当成文件内容返回。
+
+### temp_dir 与原子写入
+
+启用 `tempfile` 时，落盘的做法是「写临时文件 → rename 到目标」。`rename` 跨文件系统会直接失败（`EXDEV`），所以临时文件必须和目标在同一个文件系统上。
+
+`with_temp_dir` 配置的目录只在**与目标同设备**时才会被采用，否则自动退回目标的父目录。凭这一点，下面这种配置也照样能工作（根目录在 A 分区、数据目录在 B 分区）：
+
+```rust
+let fs = Fs::builder("/a/fs".into())
+    .with_data_path(Some("/b/data".into()))
+    .build()?;
+```
+
 ## 磁盘布局
 
 ```
 <root>/
 ├── db.redb                        # 元数据：版本历史 + 引用计数
+├── .tmp/                          # 落盘时的临时文件目录（启用 tempfile 时才有）
 └── data/
     └── ab/
         └── cdef0123...            # 块实体，文件名是内容的 blake3 hex
@@ -170,7 +205,7 @@ cargo test
 写清楚边界，用的时候好判断：
 
 - **一个根目录同时只能被一个 `Fs` 打开**。redb 会对数据库文件加锁，重复打开会返回 `DatabaseAlreadyOpen`，要并发访问先 `drop` 掉前一个实例。
-- **写块之后没有 `fsync`**。块数据可能还在页缓存里，而数据库引用已经提交，断电存在指向空文件的记录的风险。逐块 `fsync` 在手机上代价过高，建议批量导入结束后自行同步目录。
+- **写块之后没有 `fsync`**。启用 `tempfile`（默认）时写入是原子的 —— 临时文件写完才 rename，所以不会出现「写了一半的块」；但 rename 之前没有 `fsync`，数据仍可能停留在页缓存里，而数据库引用已经提交，断电后存在「记录指向一个空文件」的风险。逐块 `fsync` 在手机上代价过高，建议批量导入结束后自行同步目录。
 - **导入中途失败会留下孤儿块**。这些块从未被记入引用计数，`release()` 不会回收它们；不过下次导入同样内容时会被直接复用，不会重复写入。
 - **版本号是毫秒时间戳**。同一毫秒内连续写入多个版本时，版本号会向后顺延，保证每个版本独占一个键 —— 否则同一毫秒的两个版本会被读成同一个文件。
 - **空文件用一个长度为 0 的哨兵块表示**。因为数据库里「一个版本」就是「一个键下的若干值」，一个值都没有等于版本不存在，空文件会连同 id 一起消失。
