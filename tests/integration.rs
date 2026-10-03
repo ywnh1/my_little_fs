@@ -425,6 +425,10 @@ fn blobs_written_by_different_backends_coexist_and_all_read_back() {
     cases.push(("gzip", vec![3u8; 42_000], Some(Compress::gzip(6))));
     #[cfg(feature = "brotli")]
     cases.push(("brotli", vec![4u8; 43_000], Some(Compress::brotli(5))));
+    #[cfg(feature = "lz4")]
+    cases.push(("lz4", vec![5u8; 44_000], Some(Compress::lz4())));
+    #[cfg(feature = "snappy")]
+    cases.push(("snappy", vec![6u8; 45_000], Some(Compress::snappy())));
 
     let mut expected = Vec::new();
     for (id, content, compress) in cases {

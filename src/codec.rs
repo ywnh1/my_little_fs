@@ -38,6 +38,12 @@ pub enum Codec {
     /// brotli（feature `brotli`）
     #[cfg(feature = "brotli")]
     Brotli = 3,
+    /// lz4：块格式，前置 4 字节原始长度（feature `lz4`）
+    #[cfg(feature = "lz4")]
+    Lz4 = 4,
+    /// snappy：原始格式，自带长度前缀（feature `snappy`）
+    #[cfg(feature = "snappy")]
+    Snappy = 5,
 }
 
 impl Codec {
@@ -52,8 +58,6 @@ impl Codec {
             1 => "zstd",
             2 => "gzip",
             3 => "brotli",
-            // 4 / 5 预留给 lz4 与 snappy：数值先占好，将来加后端时直接启用，
-            // 不用动已有的磁盘格式
             4 => "lz4",
             5 => "snappy",
             _ => "未知编码",
@@ -73,6 +77,10 @@ impl Codec {
             2 => Ok(Self::Gzip),
             #[cfg(feature = "brotli")]
             3 => Ok(Self::Brotli),
+            #[cfg(feature = "lz4")]
+            4 => Ok(Self::Lz4),
+            #[cfg(feature = "snappy")]
+            5 => Ok(Self::Snappy),
             other => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!(
@@ -96,7 +104,10 @@ pub struct Compress {
 }
 
 /// 把级别夹进后端能接受的区间，免得用户的笔误变成 panic。
-#[cfg(feature = "compress")]
+///
+/// 只有带级别的后端（zstd / gzip / brotli）用得上它 ——
+/// lz4 与 snappy 的算法没有级别。
+#[cfg(any(feature = "zstd", feature = "gzip", feature = "brotli"))]
 fn clamp_level(level: i32, lo: i32, hi: i32) -> i32 {
     level.clamp(lo, hi)
 }
@@ -129,6 +140,28 @@ impl Compress {
         Self {
             codec: Codec::Brotli,
             level: clamp_level(level, 0, 11),
+        }
+    }
+
+    /// lz4：压缩极快、解压更快，压缩比一般。
+    /// 算法没有级别，[`level`](Self::level) 会被忽略。
+    #[cfg(feature = "lz4")]
+    #[must_use]
+    pub fn lz4() -> Self {
+        Self {
+            codec: Codec::Lz4,
+            level: 0,
+        }
+    }
+
+    /// snappy：速度快，压缩比与 lz4 相近。
+    /// 算法没有级别，[`level`](Self::level) 会被忽略。
+    #[cfg(feature = "snappy")]
+    #[must_use]
+    pub fn snappy() -> Self {
+        Self {
+            codec: Codec::Snappy,
+            level: 0,
         }
     }
 }
@@ -170,7 +203,11 @@ pub(crate) fn encode(data: Vec<u8>, compress: Option<Compress>) -> io::Result<Ve
 fn pack(
     data: &[u8],
     codec: Codec,
-    #[cfg_attr(not(feature = "compress"), allow(unused_variables))] level: i32,
+    #[cfg_attr(
+        not(any(feature = "zstd", feature = "gzip", feature = "brotli")),
+        allow(unused_variables)
+    )]
+    level: i32,
 ) -> io::Result<Vec<u8>> {
     match codec {
         Codec::None => Ok(data.to_vec()),
@@ -198,6 +235,17 @@ fn pack(
             brotli::BrotliCompress(&mut &data[..], &mut out, &params)?;
             Ok(out)
         }
+
+        // lz4 块格式会在前面带上原始长度，解压时不用另外传 buffer
+        #[cfg(feature = "lz4")]
+        Codec::Lz4 => Ok(lz4_flex::block::compress_prepend_size(data)),
+
+        // snappy 原始格式自带长度前缀，同理。
+        // snap 的错误类型不能直接转 io::Error，这里手动搬一下信息
+        #[cfg(feature = "snappy")]
+        Codec::Snappy => snap::raw::Encoder::new()
+            .compress_vec(data)
+            .map_err(|e| io::Error::other(e.to_string())),
     }
 }
 
@@ -228,6 +276,15 @@ pub(crate) fn decode(raw: Vec<u8>) -> io::Result<Vec<u8>> {
             brotli::BrotliDecompress(&mut &payload[..], &mut out)?;
             Ok(out)
         }
+
+        #[cfg(feature = "lz4")]
+        Codec::Lz4 => lz4_flex::block::decompress_size_prepended(payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+
+        #[cfg(feature = "snappy")]
+        Codec::Snappy => snap::raw::Decoder::new()
+            .decompress_vec(payload)
+            .map_err(|e| io::Error::other(e.to_string())),
     }
 }
 
@@ -270,6 +327,18 @@ mod tests {
         assert_roundtrip(Compress::brotli(5), compressible());
     }
 
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn lz4_roundtrips() {
+        assert_roundtrip(Compress::lz4(), compressible());
+    }
+
+    #[cfg(feature = "snappy")]
+    #[test]
+    fn snappy_roundtrips() {
+        assert_roundtrip(Compress::snappy(), compressible());
+    }
+
     #[test]
     fn unset_compression_stores_verbatim() {
         let payload = b"raw bytes".to_vec();
@@ -294,7 +363,8 @@ mod tests {
 
         // 每个已启用的后端都要能把这种情况退回去。
         // 没有任何后端时这里就是个空列表，循环不执行。
-        #[allow(unused_mut)]
+        // 元素由 cfg 决定有无，写不成 vec![...] 字面量，故允许 init-then-push。
+        #[allow(unused_mut, clippy::vec_init_then_push)]
         let mut backends: Vec<Compress> = Vec::new();
         #[cfg(feature = "zstd")]
         backends.push(Compress::zstd(3));
@@ -302,6 +372,10 @@ mod tests {
         backends.push(Compress::gzip(9));
         #[cfg(feature = "brotli")]
         backends.push(Compress::brotli(11));
+        #[cfg(feature = "lz4")]
+        backends.push(Compress::lz4());
+        #[cfg(feature = "snappy")]
+        backends.push(Compress::snappy());
 
         for compress in backends {
             let encoded = encode(payload.clone(), Some(compress)).unwrap();
@@ -315,25 +389,41 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "gzip")]
+    /// 同一份逻辑数据用每个已启用的后端各存一份，加上原样存储的一份，
+    /// 全部都要能读回来 —— 这就是「多后端共存」的核心保证。
+    #[cfg(feature = "compress")]
     #[test]
-    fn every_backend_and_verbatim_can_coexist_in_one_directory() {
-        // 同一份逻辑数据用不同后端各存一份，互相都能读回来
+    // 列表元素由 cfg 决定有无，写不成 vec![...] 字面量
+    #[allow(clippy::vec_init_then_push)]
+    fn every_enabled_backend_and_verbatim_can_coexist_in_one_directory() {
         let payload = compressible();
-        let mut blobs = vec![encode(payload.clone(), None).unwrap()];
 
+        // 同上：元素由 cfg 决定有无
+        #[allow(unused_mut)]
+        let mut backends: Vec<Compress> = Vec::new();
         #[cfg(feature = "zstd")]
-        blobs.push(encode(payload.clone(), Some(Compress::zstd(3))).unwrap());
+        backends.push(Compress::zstd(3));
+        #[cfg(feature = "gzip")]
+        backends.push(Compress::gzip(6));
         #[cfg(feature = "brotli")]
-        blobs.push(encode(payload.clone(), Some(Compress::brotli(5))).unwrap());
-        blobs.push(encode(payload.clone(), Some(Compress::gzip(6))).unwrap());
+        backends.push(Compress::brotli(5));
+        #[cfg(feature = "lz4")]
+        backends.push(Compress::lz4());
+        #[cfg(feature = "snappy")]
+        backends.push(Compress::snappy());
 
-        for (i, blob) in blobs.iter().enumerate() {
+        // 原样存储的那一份也要在里面
+        let mut blobs = vec![encode(payload.clone(), None).unwrap()];
+        for compress in backends {
+            blobs.push(encode(payload.clone(), Some(compress)).unwrap());
+        }
+
+        for blob in &blobs {
             let tag = blob[0];
             assert_eq!(
                 decode(blob.clone()).unwrap(),
                 payload,
-                "第 {i} 份（标签 {tag} = {}）解出来不对",
+                "标签 {tag}（{}）解出来不对",
                 Codec::tag_name(tag)
             );
         }

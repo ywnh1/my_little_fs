@@ -21,6 +21,10 @@ zstd = ["dep:zstd", "compress"]
 gzip = ["dep:flate2", "compress"]
 # brotli：压缩比最高，速度慢一些
 brotli = ["dep:brotli", "compress"]
+# lz4：极快，压缩比一般
+lz4 = ["dep:lz4_flex", "compress"]
+# snappy：快，压缩比一般
+snappy = ["dep:snap", "compress"]
 
 # 内部标记：只要启用了任意一个压缩后端就会打开它。
 # 供 `with_compress` 等方法做 cfg 判断，不应该手动启用。
@@ -46,6 +50,8 @@ flate2 = { version = "1.1", default-features = false, features = [
     "rust_backend",
 ], optional = true }
 brotli = { version = "8.0", optional = true }
+lz4_flex = { version = "0.14", optional = true }
+snap = { version = "1.1", optional = true }
 tempfile = { version = "3.27", optional = true }
 
 [dev-dependencies]
