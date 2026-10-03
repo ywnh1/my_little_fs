@@ -298,7 +298,7 @@ fn remove_history_keeps_the_other_versions_readable() {
 fn compression_shrinks_compressible_data_and_never_inflates_incompressible_data() {
     let dir = tempfile::tempdir().unwrap();
     let fs = small_chunks(Fs::builder(dir.path().to_path_buf()))
-        .with_compress(Some(3))
+        .with_compress(Some(Compress::zstd(3)))
         .build()
         .unwrap();
 
@@ -320,16 +320,18 @@ fn compression_shrinks_compressible_data_and_never_inflates_incompressible_data(
     // 近乎随机：压不动。压缩不应让它反而变大
     let dir2 = tempfile::tempdir().unwrap();
     let fs2 = small_chunks(Fs::builder(dir2.path().to_path_buf()))
-        .with_compress(Some(3))
+        .with_compress(Some(Compress::zstd(3)))
         .build()
         .unwrap();
     let incompressible = pseudo_random(40_000);
     let src2 = write_src(dir2.path(), "rand.bin", &incompressible);
     fs2.copy_in(&src2, "rand").unwrap();
     let stored2 = blob_bytes(dir2.path());
+    // 每个块会多出 1 字节的编码标签，这是磁盘格式的固定开销，不算「被放大」
+    let tag_overhead = blob_count(dir2.path()) as u64;
     assert!(
-        stored2 <= incompressible.len() as u64,
-        "不可压缩数据不应被压缩放大：{stored2} vs {}",
+        stored2 <= incompressible.len() as u64 + tag_overhead,
+        "不可压缩数据不应被压缩放大（只允许每块 1 字节标签）：{stored2} vs {} + {tag_overhead}",
         incompressible.len()
     );
     assert_eq!(
@@ -355,7 +357,7 @@ fn compressed_and_uncompressed_blobs_coexist_in_one_data_directory() {
     }
     {
         let fs = small_chunks(Fs::builder(root.clone()))
-            .with_compress(Some(3))
+            .with_compress(Some(Compress::zstd(3)))
             .build()
             .unwrap();
         fs.copy_in(&src2, "packed").unwrap();
@@ -400,4 +402,49 @@ fn seeking_within_a_multi_chunk_file_reads_the_right_slice() {
     let mut slice = vec![0u8; 25_000];
     file.read_exact(&mut slice).unwrap();
     assert_eq!(slice, content[10_000..35_000]);
+}
+
+/// 各后端写进同一个数据目录，之后用一个**不带压缩设置**的实例全部读回。
+///
+/// 这正是多后端共存的意义：块自带编码标签，读的一方不需要预先知道
+/// 它当初是用哪个后端压的。
+///
+/// 没有任何压缩后端时 `with_compress` 不存在，这个测试没有意义。
+#[cfg(feature = "compress")]
+#[test]
+fn blobs_written_by_different_backends_coexist_and_all_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+
+    // 每个后端配一份不同的内容，免得互相被去重掉（内容相同只会存第一份）
+    let mut cases: Vec<(&str, Vec<u8>, Option<Compress>)> =
+        vec![("plain", vec![1u8; 40_000], None)];
+    #[cfg(feature = "zstd")]
+    cases.push(("zstd", vec![2u8; 41_000], Some(Compress::zstd(3))));
+    #[cfg(feature = "gzip")]
+    cases.push(("gzip", vec![3u8; 42_000], Some(Compress::gzip(6))));
+    #[cfg(feature = "brotli")]
+    cases.push(("brotli", vec![4u8; 43_000], Some(Compress::brotli(5))));
+
+    let mut expected = Vec::new();
+    for (id, content, compress) in cases {
+        let src = dir.path().join(format!("{id}.bin"));
+        std::fs::write(&src, &content).unwrap();
+        // 写入用的后端由 builder 决定，所以每个后端各开一次实例
+        {
+            let builder = small_chunks(Fs::builder(root.clone()));
+            let fs = builder.with_compress(compress).build().unwrap();
+            fs.copy_in(&src, id).unwrap();
+        }
+        expected.push((id, content));
+    }
+
+    // 重新打开时**不设任何压缩**：读到什么后端就用什么后端解
+    let fs = small_chunks(Fs::builder(root.clone())).build().unwrap();
+    for (id, content) in expected {
+        let mut file = fs.get(id, Index::Latest).unwrap().remove(0);
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut got).unwrap();
+        assert_eq!(got, content, "id = {id} 的内容读回来不一致");
+    }
 }

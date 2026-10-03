@@ -30,7 +30,11 @@ use std::{
 #[cfg(feature = "tempfile")]
 use tempfile::NamedTempFile;
 
-use crate::{chunk::Chunk, db::hash2path};
+use crate::{
+    chunk::Chunk,
+    codec::{self, Compress},
+    db::hash2path,
+};
 
 /// 为 `FsBuilder` 批量生成链式 setter 的辅助宏。
 ///
@@ -68,9 +72,9 @@ pub struct FsBuilder {
     pub min_size: Option<usize>,
     /// CDC 分片的平均大小（字节）
     pub avg_size: Option<usize>,
-    /// 压缩设置：`Some(level)` 启用 zstd（level 越小越快），`None` 不压缩。
-    /// 只有在启用 `zstd` feature 时才起作用。
-    pub compress: Option<i32>,
+    /// 压缩设置：`Some(..)` 启用压缩（后端与级别见 [`Compress`]），`None` 不压缩。
+    /// 只有在启用任意压缩后端 feature 时才起作用。
+    pub compress: Option<Compress>,
     /// 数据库文件位置，默认 `<root>/db.redb`
     pub db_path: Option<PathBuf>,
     /// 块数据的存储位置，默认 `<root>/data`
@@ -177,9 +181,9 @@ impl FsBuilder {
     }
 
     with_any! {
-        /// 设置压缩级别；需要 `zstd` feature，否则这个方法不存在。
-        #[cfg(feature = "zstd")]
-        with_compress => compress => Option<i32>,
+        /// 设置压缩后端与级别；需要至少启用一个压缩后端 feature，否则这个方法不存在。
+        #[cfg(feature = "compress")]
+        with_compress => compress => Option<Compress>,
         with_db_path => db_path => Option<PathBuf>,
         with_data_path => data_path => Option<PathBuf>,
         with_root_path => root_path => PathBuf,
@@ -208,9 +212,8 @@ pub struct Fs {
     pub(crate) db: Database,
     pub(crate) cdc_opt: CdcOptions,
     pub(crate) data_path: PathBuf,
-    /// 压缩设置。没启用 `zstd` feature 时无用武之地。
-    #[cfg_attr(not(feature = "zstd"), allow(dead_code))]
-    pub(crate) compress: Option<i32>,
+    /// 压缩设置；实际生效的后端由启用的 feature 决定。
+    pub(crate) compress: Option<Compress>,
     /// 临时文件目录。没启用 `tempfile` feature 时无用武之地。
     #[cfg_attr(not(feature = "tempfile"), allow(dead_code))]
     pub(crate) temp_dir: PathBuf,
@@ -253,23 +256,6 @@ fn same_device(a: &Path, b: &Path) -> bool {
 #[cfg(all(feature = "tempfile", not(unix)))]
 fn same_device(_a: &Path, _b: &Path) -> bool {
     false
-}
-
-/// 按需压缩一块数据；没有传级别就原样返回。
-///
-/// 不可压缩（或已经压得很紧）的数据经 zstd 反而会变大，此时保留原始字节。
-/// 两种形态在读取时靠 zstd 魔数区分，见 [`Chunk::read`]。
-#[cfg(feature = "zstd")]
-fn encode_blob(data: Vec<u8>, level: Option<i32>) -> io::Result<Vec<u8>> {
-    let Some(level) = level else {
-        return Ok(data);
-    };
-    let compressed = zstd::encode_all(data.as_slice(), level)?;
-    Ok(if compressed.len() < data.len() {
-        compressed
-    } else {
-        data
-    })
 }
 
 impl Fs {
@@ -331,11 +317,9 @@ impl Fs {
             let piece = piece?;
             // 2. 哈希：原始内容决定地址，压缩与否不影响块的身份
             let hash = blake3::hash(&piece.data);
-            // 3. 压缩（可选，取决于 feature 与配置）
-            #[cfg(feature = "zstd")]
-            let data = encode_blob(piece.data, self.compress)?;
-            #[cfg(not(feature = "zstd"))]
-            let data = piece.data;
+            // 3. 压缩（可选，取决于 feature 与配置）：
+            //    编码结果自带后端标签，读的时候不用猜
+            let data = codec::encode(piece.data, self.compress)?;
 
             // 4. 落盘（已存在的块直接跳过）
             let dest = self.data_path.join(hash2path(&hash));

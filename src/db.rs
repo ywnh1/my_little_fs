@@ -631,7 +631,9 @@ mod tests {
         };
         let path = fs.data_path.join(chunk.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, data).unwrap();
+        // 走正规编码：磁盘上的块是「标签 + 载荷」，裸字节会被当成标签
+        let blob = crate::codec::encode(data.to_vec(), None).unwrap();
+        std::fs::write(path, blob).unwrap();
         chunk
     }
 

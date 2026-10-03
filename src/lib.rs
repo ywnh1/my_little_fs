@@ -9,6 +9,7 @@
 //! - [`db`]：元数据。`file_<id>` 存历史版本，`gc` 存块引用计数。
 //!   读写分别由 [`FsDbReadOnly`] / [`FsDbWrite`] 提供，回收由 [`FsGc`] 提供
 //! - [`chunk`]：块的元数据与磁盘布局
+//! - [`codec`]：块的存储编码（压缩后端可选、可共存）
 //! - [`file`]：逻辑文件 [`FsFile`]，实现 `Read` + `Seek`
 //! - [`io`]：与外界的双向复制，[`FsInput`] / [`FsOutput`]
 //!
@@ -27,6 +28,7 @@
 //! ```
 
 pub mod chunk;
+pub mod codec;
 pub mod db;
 pub mod file;
 pub mod fs;
@@ -35,6 +37,7 @@ pub mod io;
 /// 常用类型的集合。`use my_little_fs::prelude::*;` 即可开始读写。
 pub mod prelude {
     pub use crate::chunk::Chunk;
+    pub use crate::codec::{Codec, Compress};
     pub use crate::db::{FsDbReadOnly, FsDbWrite, FsGc, Index};
     pub use crate::file::FsFile;
     pub use crate::fs::{Fs, FsBuilder};

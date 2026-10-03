@@ -58,33 +58,49 @@ let fs = Fs::builder("/tmp/my-fs".into())
     .with_min_size(Some(16 * 1024))
     .with_avg_size(Some(64 * 1024))
     .with_max_size(Some(256 * 1024))
-    .with_compress(Some(3))          // zstd 级别，不设则完全不压缩
+    .with_compress(Some(Compress::zstd(3)))  // 不设则完全不压缩
     .build()?;
 ```
 
 三个 `*_size` 只填一部分也可以，没填的会按 1:4:16 推导；一个都不填用 fastcdc 推荐的 16 KiB / 32 KiB / 64 KiB。注意这几个 setter 接收的是 `Option`，所以要写 `Some(..)`。
 
-## Feature 开关
+## 压缩后端与 Feature 开关
 
-两个可选 feature，默认都开着，不需要就可以关掉：
+压缩后端是**可选、可共存**的。默认只开 `zstd`，其余按需启用：
 
-| feature | 默认 | 关掉之后 |
+| feature | 默认 | 说明 |
 | --- | --- | --- |
-| `zstd` | 开 | 不再编译 zstd，`with_compress` 连同方法一起消失（误用会在**编译期**报错），写入端一律存原始字节；数据目录里若已有压缩块，读取会返回 `Unsupported` 错误 |
-| `tempfile` | 开 | 不再编译 tempfile，`with_temp_dir` 消失；块和导出文件都直接写目标，中途崩溃可能留下写了一半的文件 |
+| `zstd` | 开 | 压缩比与速度均衡，主力后端 |
+| `gzip` | 关 | deflate 加 gzip 封装（带 CRC32），兼容性最好，几乎哪都能解 |
+| `brotli` | 关 | 压缩比最高，速度慢一些 |
+| `tempfile` | 开 | 先写临时文件再 rename 的原子落盘，附带 `temp_dir` 配置项 |
+
+后端可以同时启用多个：**写**新块时用你选的那个，**读**块时按块自带的编码标签分派。所以今天用 zstd 写的库，明天换成 brotli 也照样读得回来。
 
 ```toml
-# 两个都关：只剩核心依赖
+# 只要核心依赖：不压缩，也不原子落盘
 my_little_fs = { git = "https://github.com/ywnh1/my_little_fs", default-features = false }
 
-# 只要原子写入，不要压缩后端
-my_little_fs = { git = "...", default-features = false, features = ["tempfile"] }
+# 在默认基础上再加两个后端
+my_little_fs = { git = "...", features = ["gzip", "brotli"] }
 
-# 只要压缩，不要原子写入
-my_little_fs = { git = "...", default-features = false, features = ["zstd"] }
+# 用 gzip 顶替 zstd
+my_little_fs = { git = "...", default-features = false, features = ["gzip", "tempfile"] }
 ```
 
-关掉 `zstd` 不影响读回未压缩的数据，只是解不开压缩块 —— 而且会明确报 `Unsupported`，不会把压缩数据当成文件内容返回。
+选择写入时用哪个后端：
+
+```rust
+use my_little_fs::prelude::*;
+
+let fs = Fs::builder("/tmp/my-fs".into())
+    .with_compress(Some(Compress::brotli(9)))  // 或 Compress::zstd(3) / Compress::gzip(6)
+    .build()?;
+```
+
+级别超出后端的合法区间（gzip 0-9、brotli 0-11、zstd 1-22）时会被夹住，不会 panic。压不动的数据（随机字节、已压过的内容）自动退回原样存储，不会反而变大。
+
+没有任何压缩后端时，`with_compress` 连同方法一起消失 —— 误用是**编译期**报错，不是运行时静默忽略。反过来，读到用未启用后端写的块时会得到明确的 `Unsupported` 错误，并且点名是哪个后端，而不是把压缩数据当成文件内容返回。
 
 ### temp_dir 与原子写入
 
@@ -106,8 +122,10 @@ let fs = Fs::builder("/a/fs".into())
 ├── .tmp/                          # 落盘时的临时文件目录（启用 tempfile 时才有）
 └── data/
     └── ab/
-        └── cdef0123...            # 块实体，文件名是内容的 blake3 hex
+        └── cdef0123...            # 块实体 = [1 字节编码标签][载荷]
 ```
+
+块文件名是**原始内容**的 blake3 hex，而文件内容可能被压缩过 —— 开头的 1 字节标签说明它用了哪个后端（`0` 未压缩、`1` zstd、`2` gzip、`3` brotli）。标签的数值属于磁盘格式，不会因为 feature 开关而改变。
 
 块路径 = `<数据目录>/<哈希 hex 的前 2 位>/<哈希 hex 的其余 62 位>`，用前 2 位做一层分片目录，避免单个目录里堆几十万个文件。
 
@@ -124,7 +142,8 @@ let fs = Fs::builder("/a/fs".into())
 | --- | --- |
 | [`fs`](src/fs.rs) | 门面。[`FsBuilder`](src/fs.rs) 负责打开与配置，`Fs` 负责分块落盘 |
 | [`db`](src/db.rs) | 元数据。读写 trait、`Index` 选取语义、引用计数与回收 |
-| [`chunk`](src/chunk.rs) | 块的元数据与磁盘布局，读取时自动解压 |
+| [`chunk`](src/chunk.rs) | 块的元数据与磁盘布局 |
+| [`codec`](src/codec.rs) | 块的存储编码：多个压缩后端在这里分派 |
 | [`file`](src/file.rs) | 逻辑文件 `FsFile`，实现 `Read` + `Seek` |
 | [`io`](src/io.rs) | 与外界真实文件的双向复制 |
 
@@ -195,10 +214,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 测试
 
 ```sh
-cargo test
+cargo test                        # 默认组合
+cargo test --all-features         # 三个压缩后端全开
+cargo test --no-default-features  # 什么都不开
 ```
 
-55 个测试：38 个单元测试（分块参数推导、块的压缩嗅探、`FsFile` 的定位/寻址/跨块读取、数据库的各种 `Index` 语义与引用计数），16 个端到端测试（走完整的导入导出路径，覆盖多块大文件、去重、历史回滚、压缩与未压缩块共存、跨进程重开根目录），外加 1 个文档测试。
+默认组合下 66 个测试：48 个单元测试（分块参数推导、编码标签分派与各后端往返、`FsFile` 的定位/寻址/跨块读取、数据库的各种 `Index` 语义与引用计数），17 个端到端测试（走完整的导入导出路径，覆盖多块大文件、去重、历史回滚、多后端写进同一目录再全部读回、跨进程重开根目录），外加 1 个文档测试。
+
+上面三种命令以及「单独开某一个后端」等组合都实测过。
 
 ## 设计上的取舍
 
@@ -210,6 +233,7 @@ cargo test
 - **版本号是毫秒时间戳**。同一毫秒内连续写入多个版本时，版本号会向后顺延，保证每个版本独占一个键 —— 否则同一毫秒的两个版本会被读成同一个文件。
 - **空文件用一个长度为 0 的哨兵块表示**。因为数据库里「一个版本」就是「一个键下的若干值」，一个值都没有等于版本不存在，空文件会连同 id 一起消失。
 - **`FsFile` 的 `PartialEq` 把读取缓存也算在内**。两个内容相同、只是缓存命中情况不同的 `FsFile` 会被判为不相等；要比内容请比 `get_size()` 和读出的字节。
+- **块文件是 `[1 字节标签][载荷]`**。早先靠 zstd 魔数猜「这块压过没有」，多后端下走不通 —— gzip 的魔数只有 2 字节，未压缩数据撞上的概率是 1/65536；brotli 更是压根没有魔数。改成显式标签后这些不确定性一并消失，代价是每块多 1 字节。
 - **没有加密，没有访问控制**。地址是内容哈希，拿到数据文件就能读出内容。
 
 ## 环境
